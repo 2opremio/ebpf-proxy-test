@@ -12,7 +12,12 @@ all: sockmap_kern.c proxy_server.c echo_server.c net.c common.h
 	clang -g -Wall -Wextra -O2 \
 		net.c \
 		proxy_server.c \
-		-o normap_proxy_server -lpthread -lbpf
+		-o splice_proxy_server -lpthread -lbpf -DUSE_SPLICE
+
+	clang -g -Wall -Wextra -O2 \
+		net.c \
+		proxy_server.c \
+		-o normal_proxy_server -lpthread -lbpf
 
 	clang -g -Wall -Wextra -O2 \
 		net.c \

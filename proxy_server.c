@@ -2,7 +2,6 @@
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-#include <bpf/libbpf_util.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/tcp.h>
@@ -30,6 +29,83 @@ struct header {
     uint32_t target_ip;
     uint16_t target_port;
 } __attribute__((packed));
+
+#ifdef USE_SPLICE
+
+/* There is no "good" splice buffer size. Anecdotical evidence
+	 * says that it should be no larger than 512KiB since this is
+	 * the max we can expect realistically to fit into cpu
+	 * cache. */
+#define SPLICE_MAX BUFFER_SIZE
+
+void make_pipe(int pfd[2])
+{
+	int r = pipe(pfd);
+	if (r < 0) {
+		PFATAL("pipe()");
+	}
+
+	r = fcntl(pfd[0], F_SETPIPE_SZ, SPLICE_MAX);
+	if (r < 0) {
+		PFATAL("fcntl()");
+	}
+    long pipe_size = fcntl(pfd[0], F_GETPIPE_SZ);
+	if (pipe_size != SPLICE_MAX) {
+		PFATAL("could not set pipe size");
+	}
+}
+
+int redirect(int from_fd, int to_fd, int pfd[2])
+{
+    /* This is fairly unfair. We are doing SPLICE_MAX
+    * in one go, as opposed to naive approaches. Cheating. */
+    int n = splice(from_fd, NULL, pfd[1], NULL, SPLICE_MAX,
+			       SPLICE_F_MOVE | SPLICE_F_MORE);
+    if (n < 0) {
+        if (errno == ECONNRESET) {
+            fprintf(stderr, "[!] ECONNRESET\n");
+            return -1;
+        }
+        if (errno == EAGAIN) {
+            return -1;
+        }
+        PFATAL("splice()");
+    }
+    if (n == 0) {
+        /* On TCP socket zero means EOF */
+        fprintf(stderr, "[-] edge side EOF\n");
+        return -1;
+    }
+    int m = splice(pfd[0], NULL, to_fd, NULL, n, SPLICE_F_MOVE | SPLICE_F_MORE);
+    if (m < 0) {
+        if (errno == ECONNRESET) {
+            fprintf(stderr, "[!] ECONNRESET on origin\n");
+            return -1;
+        }
+        if (errno == EPIPE) {
+            fprintf(stderr, "[!] EPIPE on origin\n");
+            return -1;
+        }
+        PFATAL("send()");
+    }
+    if (m == 0) {
+        int err;
+        socklen_t err_len = sizeof(err);
+        int r = getsockopt(to_fd, SOL_SOCKET, SO_ERROR, &err,
+                           &err_len);
+        if (r < 0) {
+            PFATAL("getsockopt()");
+        }
+        errno = err;
+        PFATAL("send()");
+    }
+    if (m != n) {
+        FATAL("expecting splice to block");
+    }
+    return 0;
+}
+
+#else
 
 int redirect(int from_fd, int to_fd)
 {
@@ -88,6 +164,7 @@ int redirect(int from_fd, int to_fd)
 
     return 0;
 }
+#endif
 
 void init_sock_key(int fd, struct sock_key *key)
 {
@@ -258,36 +335,60 @@ int main(int argc, char **argv)
 
         check_sockerr(frontend_fd);
         check_sockerr(backend_fd);
-
 #else
         struct pollfd fds[2] = {
             {.fd = frontend_fd, .events = POLLIN},
             {.fd = backend_fd, .events = POLLIN},
         };
+#ifdef USE_SPLICE
 
+        int pfds_front_to_back[2];
+        make_pipe(pfds_front_to_back);
+        int pfds_back_to_front[2];
+        make_pipe(pfds_back_to_front);
+#endif
         for (;;) {
             int nfds = poll(fds, 2, -1);
             if (nfds < 0) {
                 break;
             }
-
             if (fds[0].revents == POLLIN) {
+                // printf("\nsending forward\n");
+#ifdef USE_SPLICE
+                if (redirect(frontend_fd, backend_fd, pfds_front_to_back)) {
+#else
                 if (redirect(frontend_fd, backend_fd)) {
+#endif
                     break;
                 }
+
             }
 
             if (fds[1].revents == POLLIN) {
+                // printf("\nsending back\n");
+#ifdef USE_SPLICE
+                if (redirect(backend_fd, frontend_fd, pfds_back_to_front)) {
+#else
                 if (redirect(backend_fd, frontend_fd)) {
+#endif
                     break;
                 }
+
             }
+
         }
-#endif
+#endif // USE_SOCKMAP
 
 #ifdef USE_SOCKMAP
         sockmap_delete(sockmap_fd, &frontend_key);
         sockmap_delete(sockmap_fd, &backend_key);
+#endif
+
+#ifdef USE_SPLICE
+        close(pfds_front_to_back[1]);
+        close(pfds_front_to_back[0]);
+        close(pfds_back_to_front[1]);
+        close(pfds_back_to_front[0]);
 #endif
 
         close(frontend_fd);
