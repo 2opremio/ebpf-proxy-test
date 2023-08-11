@@ -60,7 +60,7 @@ int redirect(int from_fd, int to_fd, int pfd[2])
     /* This is fairly unfair. We are doing SPLICE_MAX
     * in one go, as opposed to naive approaches. Cheating. */
     int n = splice(from_fd, NULL, pfd[1], NULL, SPLICE_MAX,
-			       SPLICE_F_MOVE | SPLICE_F_MORE);
+			       SPLICE_F_MOVE);
     if (n < 0) {
         if (errno == ECONNRESET) {
             fprintf(stderr, "[!] ECONNRESET\n");
@@ -76,7 +76,7 @@ int redirect(int from_fd, int to_fd, int pfd[2])
         fprintf(stderr, "[-] edge side EOF\n");
         return -1;
     }
-    int m = splice(pfd[0], NULL, to_fd, NULL, n, SPLICE_F_MOVE | SPLICE_F_MORE);
+    int m = splice(pfd[0], NULL, to_fd, NULL, n, SPLICE_F_MOVE);
     if (m < 0) {
         if (errno == ECONNRESET) {
             fprintf(stderr, "[!] ECONNRESET on origin\n");
