@@ -233,19 +233,25 @@ int main(int argc, char **argv)
 
     struct bpf_object *obj;
     struct bpf_program *prog;
-    int bpf_prog_fd, sockmap_fd, prog_verdict_fd;
-    if (bpf_prog_load(filename, BPF_PROG_TYPE_SK_SKB, &obj, &bpf_prog_fd)) {
-        PFATAL("bpf_prog_load, failed");
+    int sockmap_fd, prog_verdict_fd;
+
+    obj = bpf_object__open_file(filename, NULL);
+    if (libbpf_get_error(obj)) {
+        PFATAL("bpf_object__open, failed");
+    }
+    prog = bpf_object__find_program_by_title(obj, "prog_verdict");
+    if (!prog) {
+        PFATAL("bpf_object__find_program_by_title, get prog_verdict failed");
+    }
+
+    bpf_program__set_type(prog, BPF_PROG_TYPE_SK_SKB);
+    if (bpf_object__load(obj)) {
+        PFATAL("bpf_object__load, failed");
     }
 
     sockmap_fd = bpf_object__find_map_fd_by_name(obj, "sock_map");
     if (sockmap_fd < 0) {
         PFATAL("bpf_object__find_map_fd_by_name, get sockmap_fd failed");
-    }
-
-    prog = bpf_object__find_program_by_title(obj, "prog_verdict");
-    if (!prog) {
-        PFATAL("bpf_object__find_program_by_title, get prog_verdict failed");
     }
 
     prog_verdict_fd = bpf_program__fd(prog);
